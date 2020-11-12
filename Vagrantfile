@@ -1,9 +1,18 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 
-# Install tmux and virtualenv to support development
+# Install tmux, virtualenv, and mariadb-server to support development
 $preProvision= <<SCRIPT
-sudo apt-get install tmux virtualenvwrapper -y
+# Prevent attempt to access stdin, causing dpkg-reconfigure error output
+export DEBIAN_FRONTEND=noninteractive
+apt-get install -y tmux virtualenvwrapper
+
+# As per instructions at https://downloads.mariadb.org/mariadb/repositories
+apt-get install -y software-properties-common
+apt-key adv --recv-keys --keyserver hkp://keyserver.ubuntu.com:80 0xF1656F24C74CD1D8 2>&1
+add-apt-repository -y 'deb [arch=amd64,arm64,i386,ppc64el] http://mirror.lstn.net/mariadb/repo/10.4/ubuntu xenial main'
+apt-get update
+apt-get install -y mariadb-server
 SCRIPT
 
 # Wrap provisioning script with a virutalenv for pip packages
@@ -14,18 +23,31 @@ workon ctfd
 cd /vagrant
 ./prepare.sh
 pip install -r development.txt
+
+echo "Initialising database"
+commands="CREATE DATABASE ctfd;
+CREATE USER 'ctfduser'@'localhost' IDENTIFIED BY 'ctfd';
+GRANT USAGE ON *.* TO 'ctfduser'@'localhost' IDENTIFIED BY 'ctfd';
+GRANT ALL privileges ON ctfd.* TO 'ctfduser'@'localhost';FLUSH PRIVILEGES;"
+echo "${commands}" | sudo /usr/bin/mysql -u root -pctfd
 SCRIPT
 
 # Start development server in a tmux session
 $startServer= <<SCRIPT
 source /usr/share/virtualenvwrapper/virtualenvwrapper_lazy.sh
 workon ctfd
+
+export DATABASE_URL="mysql+pymysql://ctfduser:ctfd@localhost/ctfd"
+
+cd /vagrant
+python manage.py db upgrade
+
+echo "Starting CTFd"
 tmux new-session -d -n "ctfd" -c "/vagrant" -s "ctfd" "gunicorn --bind 0.0.0.0:8000 -w 4 'CTFd:create_app()'"
 SCRIPT
 
 Vagrant.configure("2") do |config|
-  # ubuntu/xenial64 supports synced folders
-  config.vm.box = "ubuntu/xenial64"
+  config.vm.box = "bento/ubuntu-16.04"
 
   # Create a private network, which allows host-only access to the machine
   config.vm.network "private_network", ip: "10.9.8.7"
@@ -37,7 +59,7 @@ Vagrant.configure("2") do |config|
 
   # Pre-provision
   config.vm.provision "shell", inline: $preProvision
-  
+
   # Provisioning scripts
   config.vm.provision "shell", inline: $provision, privileged: false
 
@@ -46,6 +68,6 @@ Vagrant.configure("2") do |config|
                       run: "always"
 
   # Install docker (convenience)
-  config.vm.provision "shell", path: "scripts/install_docker_ubuntu.sh"
+  config.vm.provision "shell", path: "scripts/install_docker.sh", privileged: false
 
 end
